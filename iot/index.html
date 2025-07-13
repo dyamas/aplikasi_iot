@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Penerjemah Bahasa Isyarat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background-color: #f5f5f5;
+      color: #333;
+    }
+
+    h1 {
+      font-size: 2rem;
+      margin: 20px 0 10px;
+    }
+
+    .container {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      width: 100%;
+      max-width: 500px;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+      background-color: white;
+      margin-bottom: 30px;
+    }
+
+    video, canvas {
+      border: 2px solid #007bff;
+      border-radius: 8px;
+      width: 100%;
+      margin: 10px 0;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      justify-content: center;
+      margin: 15px 0;
+    }
+
+    button {
+      background-color: #007bff;
+      color: white;
+      padding: 10px 15px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      transition: background-color 0.3s;
+    }
+
+    button:hover {
+      background-color: #0056b3;
+    }
+
+    #result, #history {
+      margin-top: 15px;
+      width: 100%;
+      background-color: #f0f0f0;
+      border-radius: 8px;
+      padding: 15px;
+      text-align: left;
+    }
+
+    #loading {
+      display: none;
+      margin-top: 10px;
+    }
+
+    #loading img {
+      width: 30px;
+      height: 30px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Penerjemah Bahasa Isyarat</h1>
+  <div class="container">
+    <div class="controls">
+      <button id="toggle-button">Aktifkan Kamera</button>
+      <button id="capture-button" disabled>Ambil Gambar</button>
+      <button id="switch-camera-button" title="Ganti Kamera">🔄</button>
+      <button onclick="showHistory()">Riwayat</button>
+      <button onclick="exportExcel()">Ekspor Excel</button>
+      <button onclick="window.print()">Cetak</button>
+    </div>
+
+    <video id="webcam-video" autoplay playsinline></video>
+    <canvas id="canvas" width="320" height="240"></canvas>
+
+    <div id="loading">
+      <img src="https://i.gifer.com/4V0b.gif" alt="Loading" />
+    </div>
+
+    <div id="result"><strong>Hasil scan akan muncul di sini.</strong></div>
+    <div id="history"></div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.21.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.0/xlsx.full.min.js"></script>
+  <script>
+    const signData = {
+      "sama-sama": {
+        arti: "Ucapan balasan untuk 'terima kasih'.",
+        kategori: "Sapaan / Balasan",
+        kesopanan: "Formal / Santai",
+        konteks: "Digunakan setelah seseorang mengucapkan terima kasih.",
+        contohKalimat: "A: Terima kasih ya! B: Sama-sama."
+      },
+      "maaf": {
+        arti: "Ucapan permintaan maaf.",
+        kategori: "Ekspresi Emosi",
+        kesopanan: "Formal / Santai",
+        konteks: "Digunakan saat melakukan kesalahan atau meminta izin.",
+        contohKalimat: "Maaf saya datang terlambat."
+      },
+      "bisa": {
+        arti: "Menyatakan kemampuan untuk melakukan sesuatu.",
+        kategori: "Afirmasi",
+        kesopanan: "Netral",
+        konteks: "Digunakan untuk menyatakan kemampuan.",
+        contohKalimat: "Saya bisa membantu Anda."
+      },
+      "halo": {
+        arti: "Sapaan untuk menyapa seseorang.",
+        kategori: "Sapaan",
+        kesopanan: "Santai",
+        konteks: "Digunakan saat menyapa seseorang di awal percakapan.",
+        contohKalimat: "Halo, apa kabar?"
+      }
+    };
+
+    const toggleButton = document.getElementById('toggle-button');
+    const captureButton = document.getElementById('capture-button');
+    const webcamVideo = document.getElementById('webcam-video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const resultDiv = document.getElementById('result');
+    const loadingElement = document.getElementById('loading');
+    const switchCameraButton = document.getElementById('switch-camera-button');
+    const historyDiv = document.getElementById('history');
+
+    let model;
+    let currentStream;
+    let currentDeviceId = null;
+
+    async function setupWebcam(deviceId) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: deviceId ? { exact: deviceId } : undefined }
+        });
+
+        if (currentStream) {
+          currentStream.getTracks().forEach(track => track.stop());
+        }
+        currentStream = stream;
+        webcamVideo.srcObject = stream;
+        captureButton.disabled = false;
+        toggleButton.textContent = 'Matikan Kamera';
+      } catch (err) {
+        alert("Tidak bisa mengakses kamera.");
+      }
+    }
+
+    function stopWebcam() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+        webcamVideo.srcObject = null;
+        captureButton.disabled = true;
+        toggleButton.textContent = 'Aktifkan Kamera';
+      }
+    }
+
+    async function loadModel() {
+      const modelURL = "https://teachablemachine.withgoogle.com/models/1laGntDYu/model.json";
+      const metadataURL = "https://teachablemachine.withgoogle.com/models/1laGntDYu/metadata.json";
+      model = await tmImage.load(modelURL, metadataURL);
+    }
+
+    async function predictImage() {
+      loadingElement.style.display = 'block';
+      ctx.drawImage(webcamVideo, 0, 0, canvas.width, canvas.height);
+      const prediction = await model.predict(canvas);
+      loadingElement.style.display = 'none';
+
+      const top = prediction.sort((a, b) => b.probability - a.probability)[0];
+      const className = top.className.toLowerCase();
+      const signInfo = signData[className];
+
+      if (signInfo) {
+        resultDiv.innerHTML = `
+          <h3>Gesture Teridentifikasi: ${className}</h3>
+          <p><strong>Arti:</strong> ${signInfo.arti}</p>
+          <p><strong>Kategori:</strong> ${signInfo.kategori}</p>
+          <p><strong>Kesopanan:</strong> ${signInfo.kesopanan}</p>
+          <p><strong>Konteks:</strong> ${signInfo.konteks}</p>
+          <p><strong>Contoh Kalimat:</strong> ${signInfo.contohKalimat}</p>
+        `;
+
+        let history = JSON.parse(localStorage.getItem("signHistory")) || [];
+        history.push({ gesture: className, time: new Date().toLocaleString() });
+        localStorage.setItem("signHistory", JSON.stringify(history));
+      } else {
+        resultDiv.innerHTML = `<h3>Gesture tidak dikenal</h3>`;
+      }
+    }
+
+    function showHistory() {
+      const history = JSON.parse(localStorage.getItem("signHistory")) || [];
+      if (history.length === 0) {
+        historyDiv.innerHTML = '<p>Tidak ada riwayat.</p>';
+        return;
+      }
+      historyDiv.innerHTML = '<h3>Riwayat Terjemahan:</h3>';
+      history.forEach((item, i) => {
+        historyDiv.innerHTML += `<p>${i + 1}. ${item.gesture} - ${item.time}</p>`;
+      });
+    }
+
+    function exportExcel() {
+      const history = JSON.parse(localStorage.getItem("signHistory")) || [];
+      if (history.length === 0) {
+        alert("Tidak ada data untuk diekspor.");
+        return;
+      }
+      const worksheet = XLSX.utils.json_to_sheet(history);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Riwayat");
+      XLSX.writeFile(workbook, "riwayat-terjemahan.xlsx");
+    }
+
+    toggleButton.onclick = async () => {
+      if (toggleButton.textContent === 'Aktifkan Kamera') {
+        await loadModel();
+        await setupWebcam(currentDeviceId);
+      } else {
+        stopWebcam();
+      }
+    };
+
+    captureButton.onclick = predictImage;
+
+    switchCameraButton.onclick = async () => {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      const nextDeviceIndex = (videoDevices.findIndex(device => device.deviceId === currentDeviceId) + 1) % videoDevices.length;
+      currentDeviceId = videoDevices[nextDeviceIndex].deviceId;
+      await setupWebcam(currentDeviceId);
+    };
+  </script>
+</body>
+</html>
